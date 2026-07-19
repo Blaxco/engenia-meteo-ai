@@ -141,6 +141,16 @@
   .spag-foot{padding:10px 16px 14px;font-size:.74rem;color:var(--ink-soft);line-height:1.5}
   .spag-status{padding:24px 16px;font-size:.85rem;color:var(--ink-soft)}
 
+  tbody tr.sel-row{cursor:pointer}
+  tbody tr.sel-row:hover td{background:rgba(34,115,181,.08)}
+  tbody tr.sel-row[data-open="1"] td{background:rgba(34,115,181,.12)}
+  tr.analysis td{background:#EFF5F9;border-left:4px solid var(--ink);padding:14px 16px}
+  .an{font-size:.85rem;line-height:1.65;color:var(--ink);max-width:74ch}
+  .an p{margin:0 0 9px}
+  .an p:last-child{margin-bottom:0}
+  .an strong{color:var(--ink)}
+  .an .an-head{font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:8px}
+
   .note{margin-top:16px;font-size:.78rem;color:var(--ink-soft);line-height:1.55}
   .note strong{color:var(--ink)}
 
@@ -458,7 +468,7 @@
       });
       byDay[d].push(row);
     }
-    store = { city, days: days.slice(0,14), byDay, tz: dataM.timezone, nowCity };
+    store = { city, days: days.slice(0,14), byDay, tz: dataM.timezone, nowCity, pressByTime };
     selectedDay = 0;
   }
 
@@ -637,7 +647,9 @@
     theadrow.innerHTML = th;
 
     tabnote.innerHTML =
-      "Ogni cella modello riporta <strong>temperatura</strong>, <strong>umidità relativa (UR)</strong>, "
+      "<strong>💡 Clicca su una riga qualsiasi</strong> per aprire l'analisi meteorologica di quell'ora: il quadro termico, "
+      + "il perché di eventuali disaccordi fra i modelli (venti di caduta, fronti, tempismi), precipitazioni, vento, pressione e un consiglio di lettura. "
+      + "Ogni cella modello riporta <strong>temperatura</strong>, <strong>umidità relativa (UR)</strong>, "
       + "<strong>vento medio a 10 m</strong> e la <strong>pioggia prevista nelle 2 ore</strong> (mm). "
       + "La colonna <strong>Cielo · pioggia · hPa</strong> mostra l'icona del tempo previsto (☀️ sereno, ⛅ variabile, ☁️ coperto, "
       + "🌧️ pioggia, ⛈️ temporale…), la probabilità di precipitazione derivata dall'insieme degli scenari "
@@ -749,6 +761,9 @@
       }
       html += "<td>"+agree+"</td>";
       tr.innerHTML = html;
+      tr.className = "sel-row";
+      tr.title = "Clicca per l'analisi di questa ora";
+      tr.addEventListener("click", ()=>toggleAnalysis(tr, r, cols));
       tbody.appendChild(tr);
     });
     if(rows.length===0){
@@ -916,6 +931,199 @@
   }
 
   function esc(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+
+  /* ---------------- analisi al click sulla riga ---------------- */
+  function toggleAnalysis(tr, row, cols){
+    // chiudi eventuale analisi già aperta
+    const openTr = tbody.querySelector("tr.analysis");
+    const wasThis = tr.getAttribute("data-open")==="1";
+    if(openTr) openTr.remove();
+    tbody.querySelectorAll("tr.sel-row").forEach(x=>x.removeAttribute("data-open"));
+    if(wasThis) return; // secondo click sulla stessa riga: chiudi e basta
+    tr.setAttribute("data-open","1");
+    const anTr = document.createElement("tr");
+    anTr.className = "analysis";
+    anTr.innerHTML = "<td colspan='"+cols+"'><div class='an'>"+buildAnalysis(row)+"</div></td>";
+    tr.after(anTr);
+  }
+
+  function timeShift(t, hours){
+    const d = new Date(t+":00Z");
+    d.setUTCHours(d.getUTCHours()+hours);
+    return d.toISOString().slice(0,13)+":00";
+  }
+  function fT(v){ return v.toFixed(1).replace(".",",")+" °C"; }
+
+  function wcDesc(code){
+    if(code==null) return null;
+    if(code===0) return "cielo sereno";
+    if(code===1) return "prevalentemente sereno";
+    if(code===2) return "parzialmente nuvoloso, tempo variabile";
+    if(code===3) return "cielo coperto";
+    if(code===45||code===48) return "nebbia o foschia densa";
+    if(code>=51&&code<=57) return "pioviggine";
+    if(code>=61&&code<=63) return "pioggia";
+    if(code>=65&&code<=67) return "pioggia forte";
+    if(code>=71&&code<=77) return "neve";
+    if(code>=80&&code<=82) return "rovesci di pioggia";
+    if(code===85||code===86) return "rovesci di neve";
+    if(code>=95) return "temporali";
+    return "nuvolosità variabile";
+  }
+
+  function buildAnalysis(row){
+    const NAMES = ["ECMWF IFS","GFS","ICON"];
+    const ms = row.models.map((m,i)=>({name:NAMES[i], t:m.t, rh:m.rh, w:m.w, p:m.p}))
+                         .filter(m=>m.t!=null);
+    const wnd = wn2.ready ? wn2For(row) : null;
+    const P = [];
+
+    // --- scadenza e affidabilità di base ---
+    const rowDate = new Date(row.time+":00Z");
+    const diffH = Math.round((rowDate - store.nowCity)/3.6e6);
+    const dayName = (()=>{ const d=new Date(row.time.slice(0,10)+"T12:00:00Z");
+      return DOW[d.getUTCDay()]+" "+d.getUTCDate()+" "+MON[d.getUTCMonth()]; })();
+    let lead;
+    if(diffH<=12) lead = "mancano circa "+Math.max(diffH,1)+" ore: siamo in pieno campo del nowcasting, dove radar e osservazioni valgono più dei modelli";
+    else if(diffH<=72) lead = "scadenza a circa "+diffH+" ore: intervallo in cui i modelli sono generalmente affidabili sulla struttura, meno sul tempismo fine";
+    else if(diffH<=168) lead = "scadenza a "+Math.round(diffH/24)+" giorni: attendibile la tendenza generale, i dettagli orari vanno presi con cautela";
+    else lead = "scadenza a "+Math.round(diffH/24)+" giorni: qui si leggono solo tendenze, non previsioni puntuali"
+      + (ms.length<3 ? " — a questa distanza ICON"+(ms.length<2?" ed ECMWF non arrivano":" non arriva più")+", restano "
+        + (ms.length===1? ms[0].name : ms.map(m=>m.name).join(" e "))+(wnd?" e WeatherNext 2":"") : "");
+    P.push("<div class='an-head'>Analisi · "+dayName+" ore "+String(row.hour).padStart(2,"0")+":00</div>");
+    P.push("<p>"+lead.charAt(0).toUpperCase()+lead.slice(1)+".</p>");
+
+    if(ms.length===0 && !wnd){
+      P.push("<p>Per questa scadenza nessun modello fornisce dati: riduci l'orizzonte di qualche giorno.</p>");
+      return P.join("");
+    }
+
+    // --- quadro termico e accordo ---
+    if(ms.length>=2){
+      const temps = ms.map(m=>m.t);
+      const tmax = Math.max(...temps), tmin = Math.min(...temps);
+      const spread = tmax-tmin;
+      const mean = temps.reduce((a,b)=>a+b,0)/temps.length;
+      const hot = ms.find(m=>m.t===tmax), cold = ms.find(m=>m.t===tmin);
+      const others = ms.filter(m=>m!==hot);
+      const othersRh = others.map(m=>m.rh).filter(v=>v!=null);
+
+      if(spread<1.5){
+        P.push("<p><strong>Temperatura:</strong> i modelli concordano molto bene attorno a "+fT(mean)
+          +" (scarto di appena "+spread.toFixed(1).replace(".",",")+" °C). Quando l'accordo è così stretto, il valore è affidabile.</p>");
+      }else if(spread<3){
+        P.push("<p><strong>Temperatura:</strong> accordo discreto, media attorno a "+fT(mean)
+          +" con uno scarto di "+spread.toFixed(1).replace(".",",")+" °C: la differenza riflette probabilmente nuvolosità o rimescolamento gestiti in modo diverso. Valore indicativo buono, ma non prendere i decimali alla lettera.</p>");
+      }else{
+        // conflitto: cerca la firma del vento di caduta (caldo+secco+ventoso in un solo modello)
+        const isFoehn = hot.rh!=null && othersRh.length>0
+          && (Math.min(...othersRh) - hot.rh) >= 15
+          && (tmax - (temps.reduce((a,b)=>a+b,0)-tmax)/(temps.length-1)) >= 3
+          && (hot.w==null || hot.w>=8);
+        if(isFoehn){
+          P.push("<p><strong>Conflitto aperto tra i modelli (Δ "+spread.toFixed(1).replace(".",",")+" °C) con la firma classica del vento di caduta:</strong> "
+            +hot.name+" prevede "+fT(hot.t)+" con umidità crollata al "+Math.round(hot.rh)+"%, mentre "
+            +others.map(m=>m.name).join(" e ")+" restano su "+fT(others[0].t)+" con aria molto più umida. "
+            +"Il modello più caldo sta facendo scendere aria compressa dai rilievi (favonio, garbino sul versante adriatico): "
+            +"un fenomeno on/off che dipende da pochi chilometri. Se entra, la temperatura può balzare in un'ora; se non sfonda, resterà sui valori degli altri modelli. A poche ore dall'evento, verifica con le stazioni e i METAR più vicini.</p>");
+        }else if(cold.rh!=null && othersRh.length>0 && cold.rh - Math.max(...ms.filter(m=>m!==cold).map(m=>m.rh||0)) >= 15){
+          P.push("<p><strong>Conflitto tra i modelli (Δ "+spread.toFixed(1).replace(".",",")+" °C):</strong> "
+            +cold.name+" è nettamente più freddo e umido degli altri ("+fT(cold.t)+", UR "+Math.round(cold.rh)+"%): "
+            +"probabilmente fa arrivare prima aria marittima, nubi basse o un fronte, mentre gli altri lo tengono a distanza. È una questione di tempismo: guarda le corse successive per capire chi sta convergendo su chi.</p>");
+        }else{
+          P.push("<p><strong>Disaccordo notevole tra i modelli (Δ "+spread.toFixed(1).replace(".",",")+" °C):</strong> si va da "
+            +fT(tmin)+" ("+cold.name+") a "+fT(tmax)+" ("+hot.name+"). Differenze così ampie di solito nascono da nuvolosità, posizione di un fronte o vento gestiti diversamente. Non scegliere il valore che ti piace: aspetta le prossime corse e osserva verso quale scenario convergono.</p>");
+        }
+      }
+    }else if(ms.length===1){
+      P.push("<p><strong>Temperatura:</strong> a questa distanza risponde solo "+ms[0].name+" con "+fT(ms[0].t)
+        +(wnd&&wnd.t!=null ? ", mentre la media dei 64 membri di WeatherNext 2 indica "+fT(wnd.t) : "")+".</p>");
+    }
+
+    // --- WeatherNext 2: incertezza dichiarata ---
+    if(wnd && wnd.t!=null && wnd.sd!=null){
+      if(wnd.sd<1)
+        P.push("<p><strong>Ensemble AI:</strong> i 64 scenari di WeatherNext 2 sono molto compatti ("+fT(wnd.t)+" ±"+wnd.sd.toFixed(1).replace(".",",")+"): l'atmosfera, vista dal modello di DeepMind, è in una fase prevedibile.</p>");
+      else if(wnd.sd<2.5)
+        P.push("<p><strong>Ensemble AI:</strong> WeatherNext 2 indica "+fT(wnd.t)+" con una dispersione moderata (±"+wnd.sd.toFixed(1).replace(".",",")+" °C) tra i suoi 64 scenari: incertezza fisiologica per la scadenza.</p>");
+      else
+        P.push("<p><strong>Ensemble AI:</strong> attenzione, i 64 scenari di WeatherNext 2 divergono parecchio (±"+wnd.sd.toFixed(1).replace(".",",")+" °C attorno a "+fT(wnd.t)+"): l'atmosfera è in una fase genuinamente difficile da prevedere. Coerente controllare anche gli spaghetti qui sotto.</p>");
+    }
+
+    // --- precipitazioni ---
+    const rains = ms.filter(m=>m.p!=null);
+    const wet = rains.filter(m=>m.p>=0.2);
+    const sky = wcDesc(row.wc);
+    let rainTxt = "";
+    if(row.pp!=null || rains.length>0){
+      rainTxt = "<p><strong>Precipitazioni:</strong> ";
+      if(row.pp!=null) rainTxt += "la probabilità è del "+Math.round(row.pp)+"% (cioè "+Math.round(row.pp/10)+" scenari su 10 la prevedono)";
+      if(rains.length>0){
+        if(wet.length===0){
+          rainTxt += (row.pp!=null?"; ":"")+"nessun modello mette pioggia significativa nel blocco di 2 ore";
+        }else if(wet.length===rains.length){
+          rainTxt += (row.pp!=null?"; ":"")+"tutti i modelli sono bagnati ("
+            +wet.map(m=>m.name+" "+m.p.toFixed(1).replace(".",",")+" mm").join(", ")+"): segnale solido";
+        }else{
+          rainTxt += (row.pp!=null?"; ":"")+"i modelli però litigano: "
+            +wet.map(m=>m.name+" "+m.p.toFixed(1).replace(".",",")+" mm").join(", ")
+            +" contro "+rains.filter(m=>m.p<0.2).map(m=>m.name).join(" e ")+" all'asciutto. "
+            +"Tipico disaccordo su tempismo o traiettoria della struttura piovosa";
+        }
+      }
+      rainTxt += ".";
+      if(row.wc!=null && row.wc>=95) rainTxt += " Il quadro previsto è temporalesco (⛈️): fenomeni per natura localizzati, la posizione esatta di una cella non è prevedibile — nelle ultime ore affidati al radar.";
+      else if(row.wc!=null && row.wc>=71 && row.wc<=86 ) rainTxt += " Attese precipitazioni nevose: controlla la temperatura, con valori di poco sopra lo zero il limite pioggia/neve può giocarsi su dettagli di quota.";
+      rainTxt += "</p>";
+      P.push(rainTxt);
+    }
+    if(sky && (row.pp==null || row.pp<20) && (row.wc==null || row.wc<51)){
+      P.push("<p><strong>Cielo:</strong> quadro previsto di "+sky+".</p>");
+    }
+
+    // --- vento ---
+    const winds = ms.filter(m=>m.w!=null);
+    if(winds.length>0){
+      const wmax = Math.max(...winds.map(m=>m.w));
+      const wmin = Math.min(...winds.map(m=>m.w));
+      let wtxt = "<p><strong>Vento:</strong> ";
+      if(wmax>=40) wtxt += "sostenuto o forte, fino a "+Math.round(wmax)+" km/h medi (le raffiche possono superare nettamente questo valore)";
+      else if(wmax>=20) wtxt += "moderato, attorno a "+Math.round((wmax+wmin)/2)+" km/h";
+      else wtxt += "debole, sotto i 20 km/h";
+      if(winds.length>=2 && (wmax-wmin)>=15) wtxt += "; nota che i modelli divergono anche sul vento ("+Math.round(wmin)+"–"+Math.round(wmax)+" km/h), coerente con l'incertezza sullo scenario";
+      P.push(wtxt+".</p>");
+    }
+
+    // --- pressione e tendenza ---
+    if(row.press!=null){
+      const before = store.pressByTime ? store.pressByTime[timeShift(row.time,-6).slice(0,13)+":00"] : null;
+      let ptxt = "<p><strong>Pressione:</strong> "+Math.round(row.press)+" hPa";
+      if(before!=null){
+        const d6 = row.press-before;
+        if(d6<=-2) ptxt += ", in calo di "+Math.abs(d6).toFixed(1).replace(".",",")+" hPa in 6 ore: segnale di peggioramento in atto o in arrivo";
+        else if(d6>=2) ptxt += ", in aumento di "+d6.toFixed(1).replace(".",",")+" hPa in 6 ore: tendenza al miglioramento e alla stabilizzazione";
+        else ptxt += ", sostanzialmente stazionaria";
+      }
+      if(row.press<1005) ptxt += ". Valore basso, coerente con una circolazione depressionaria sulla zona";
+      else if(row.press>1022) ptxt += ". Valore alto, campo anticiclonico: tempo tendenzialmente stabile"
+        + (row.hour<=8 ? ", ma occhio a nebbie o nubi basse notturne nelle valli e in pianura" : "");
+      P.push(ptxt+".</p>");
+    }
+
+    // --- consiglio finale ---
+    const temps2 = ms.map(m=>m.t);
+    const spread2 = temps2.length>=2 ? Math.max(...temps2)-Math.min(...temps2) : 0;
+    if(diffH<=12 && spread2>=3)
+      P.push("<p><strong>In sintesi:</strong> a poche ore dall'evento con uno scarto così ampio, l'unica previsione onesta è un intervallo, non un numero. Verifica in tempo reale con stazioni, METAR e radar chi ha ragione — e annota l'esito nel tuo diario.</p>");
+    else if(diffH<=12)
+      P.push("<p><strong>In sintesi:</strong> quadro affidabile e ormai a ridosso dell'evento: eventuali sorprese arriverebbero solo da fenomeni molto locali.</p>");
+    else if(spread2>=3 || (wnd&&wnd.sd!=null&&wnd.sd>=2.5))
+      P.push("<p><strong>In sintesi:</strong> scenario ancora aperto: ricontrolla dopo le prossime corse (i modelli si aggiornano ogni 6–12 ore) e osserva verso quale soluzione converge la maggioranza, spaghetti compresi.</p>");
+    else
+      P.push("<p><strong>In sintesi:</strong> buona coerenza complessiva per la scadenza: puoi ragionevolmente pianificare su questo quadro, con la normale prudenza del caso.</p>");
+
+    return P.join("");
+  }
 })();
 </script>
 </body>
