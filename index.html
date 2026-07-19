@@ -55,6 +55,26 @@
     border-radius:8px;background:var(--ink);color:#fff;cursor:pointer}
   .search button:hover{background:#0d1c2b}
   .search button:focus-visible{outline:2px solid var(--gfs);outline-offset:2px}
+  .scen-btn{background:#fff !important;color:var(--ink) !important;border:1.5px solid var(--ink) !important}
+  .scen-btn:hover{background:var(--paper-deep) !important}
+  .scen{margin-top:14px;border:1.5px solid var(--ink);border-radius:var(--radius);background:var(--card);overflow:hidden}
+  .scen-head{display:flex;justify-content:space-between;align-items:center;gap:10px;
+    padding:14px 16px;border-bottom:1.5px solid var(--ink);background:var(--paper-deep)}
+  .scen-head h3{font-size:.95rem;font-weight:800}
+  .scen-head .sm{font-size:.72rem;color:var(--ink-soft);margin-top:2px}
+  .scen-close{border:1.5px solid var(--line);background:#fff;border-radius:7px;padding:6px 12px;
+    font-size:.8rem;font-weight:700;cursor:pointer;color:var(--ink)}
+  .scen-close:hover{border-color:var(--ink)}
+  .scen-body{padding:16px}
+  .scen-body .win{border:1.5px solid var(--line);border-radius:9px;padding:13px 15px;margin-bottom:12px;background:#fff}
+  .scen-body .win h4{font-size:.78rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:7px}
+  .scen-body .win .pat{font-size:1rem;font-weight:800;margin-bottom:6px}
+  .scen-body p{font-size:.85rem;line-height:1.6;margin:0 0 8px}
+  .scen-body p:last-child{margin-bottom:0}
+  .scen-body .idx{font-size:.73rem;color:var(--ink-soft);font-variant-numeric:tabular-nums;line-height:1.6}
+  .scen-body .disc{font-size:.73rem;color:var(--ink-soft);border-top:1px solid var(--line);padding-top:10px;margin-top:4px;line-height:1.55}
+  .conf{display:inline-block;font-size:.7rem;font-weight:700;letter-spacing:.06em;padding:2px 8px;border-radius:20px;margin-left:6px;vertical-align:2px}
+  .conf.hi{background:#DDEEE3;color:var(--good)} .conf.md{background:#F5E9CE;color:#8A6413} .conf.lo{background:#F3DAD5;color:var(--bad)}
   .hint{width:100%;font-size:.78rem;color:var(--ink-soft)}
 
   .accurow{margin-top:14px;background:var(--card);border:1.5px dashed var(--accu);border-radius:var(--radius);
@@ -192,8 +212,20 @@
   <form class="search" id="form">
     <input id="city" type="text" placeholder="Scrivi una città, es. Signa, Firenze, Milano…" autocomplete="off" aria-label="Città">
     <button type="submit">Cerca previsioni</button>
-    <div class="hint">Data e ora sono rilevate automaticamente: la tabella parte dall'ora corrente della città scelta.</div>
+    <button type="button" id="scenbtn" class="scen-btn">Scenari Italia · 15 gg</button>
+    <div class="hint">Data e ora sono rilevate automaticamente: la tabella parte dall'ora corrente della città scelta. I dati si riaggiornano da soli ogni ora finché la pagina resta aperta.</div>
   </form>
+
+  <section id="scenpanel" class="scen hidden">
+    <div class="scen-head">
+      <div>
+        <h3>Scenari Italia — tendenza sinottica a 15 giorni</h3>
+        <div class="sm" id="scensm">Analisi automatica su 14 punti-griglia fra Atlantico, Europa e Nord Africa</div>
+      </div>
+      <button type="button" class="scen-close" id="scenclose">Chiudi ✕</button>
+    </div>
+    <div class="scen-body" id="scenbody"></div>
+  </section>
 
   <div class="accurow" id="accurow">
     <label for="accukey">AccuWeather</label>
@@ -468,7 +500,7 @@
       });
       byDay[d].push(row);
     }
-    store = { city, days: days.slice(0,14), byDay, tz: dataM.timezone, nowCity, pressByTime };
+    store = { city, days: days.slice(0,14), byDay, tz: dataM.timezone, nowCity, pressByTime, fetchedAt: Date.now() };
     selectedDay = 0;
   }
 
@@ -614,7 +646,9 @@
       + (c.elevation!=null ? " · "+Math.round(c.elevation)+" m s.l.m." : "");
     const n = store.nowCity;
     document.getElementById("runinfo").textContent =
-      "Richiesta del "+String(n.getUTCDate()).padStart(2,"0")+"/"
+      "⟳ Dati scaricati alle "+new Date(store.fetchedAt).toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"})
+      +" (ora del tuo dispositivo) · aggiornamento automatico ogni ora a pagina aperta. Richiesta del "
+      +String(n.getUTCDate()).padStart(2,"0")+"/"
       +String(n.getUTCMonth()+1).padStart(2,"0")+"/"+n.getUTCFullYear()
       +" ore "+String(n.getUTCHours()).padStart(2,"0")+":"+String(n.getUTCMinutes()).padStart(2,"0")
       +" (fuso orario: "+store.tz+"). Ultime corse disponibili dei modelli."
@@ -1124,6 +1158,222 @@
 
     return P.join("");
   }
+
+  /* ---------------- SCENARI ITALIA: sintesi sinottica a 15 giorni ---------------- */
+  const SCEN_PTS = [
+    {id:"AZ", name:"Azzorre",      lat:38.5, lon:-28},
+    {id:"IS", name:"Islanda",      lat:64,   lon:-22},
+    {id:"UK", name:"Regno Unito",  lat:54,   lon:-2},
+    {id:"SC", name:"Scandinavia",  lat:60,   lon:10},
+    {id:"CE", name:"Europa centr.",lat:50,   lon:10},
+    {id:"AT", name:"Atlantico",    lat:45,   lon:-25},
+    {id:"IB", name:"Iberia",       lat:40,   lon:-4},
+    {id:"AF1",name:"Algeria",      lat:32,   lon:0},
+    {id:"AF2",name:"Libia/Tunisia",lat:32,   lon:12},
+    {id:"NI", name:"Nord Italia",  lat:45.5, lon:9.2},
+    {id:"CI", name:"Centro Italia",lat:41.9, lon:12.5},
+    {id:"AD", name:"Adriatico",    lat:41.1, lon:16.9},
+    {id:"SI", name:"Sud Italia",   lat:38.1, lon:13.4},
+    {id:"EG", name:"Egeo",         lat:37,   lon:25}
+  ];
+  // riferimenti climatici mensili approssimativi (Italia): T850 °C, Z500 m, SST Mediterraneo °C
+  const T850_REF=[1,1,3,6,10,14,17,17,13,9,5,2];
+  const Z500_REF=[5560,5570,5610,5670,5740,5810,5860,5860,5800,5720,5630,5570];
+  const SST_REF=[14,13.5,14,15.5,18,21.5,24.5,25.5,24,21,18,15.5];
+
+  const scen = { html:null, at:0, loading:false };
+  const scenpanel = document.getElementById("scenpanel");
+  const scenbody = document.getElementById("scenbody");
+  document.getElementById("scenclose").addEventListener("click", ()=>scenpanel.classList.add("hidden"));
+  document.getElementById("scenbtn").addEventListener("click", async ()=>{
+    scenpanel.classList.remove("hidden");
+    scenpanel.scrollIntoView({behavior:"smooth", block:"start"});
+    if(scen.html && Date.now()-scen.at < 3600e3){ scenbody.innerHTML = scen.html; return; }
+    if(scen.loading) return;
+    scen.loading = true;
+    scenbody.innerHTML = "<p>Interrogo la griglia sinottica (Atlantico, Europa, Nord Africa: pressione, T850, geopotenziale a 500 hPa) e le temperature del Mediterraneo…</p>";
+    try{
+      const html = await buildScenari();
+      scen.html = html; scen.at = Date.now();
+      scenbody.innerHTML = html;
+    }catch(e){
+      scenbody.innerHTML = "<p>Impossibile calcolare gli scenari ("+esc(e.message)+"). Riprova tra qualche minuto.</p>";
+    }
+    scen.loading = false;
+  });
+
+  async function buildScenari(){
+    const lats = SCEN_PTS.map(p=>p.lat).join(",");
+    const lons = SCEN_PTS.map(p=>p.lon).join(",");
+    const vars = "pressure_msl,temperature_850hPa,geopotential_height_500hPa";
+    const uGFS = "https://api.open-meteo.com/v1/forecast?latitude="+lats+"&longitude="+lons
+      + "&hourly="+vars+"&models=gfs_seamless&forecast_days=16&timezone=UTC";
+    const uEC = "https://api.open-meteo.com/v1/forecast?latitude="+lats+"&longitude="+lons
+      + "&hourly="+vars+"&models=ecmwf_ifs025&forecast_days=10&timezone=UTC";
+    const uSST = "https://marine-api.open-meteo.com/v1/marine?latitude=43.6,39.8,42.8&longitude=9.2,12.3,15"
+      + "&hourly=sea_surface_temperature&forecast_days=1&timezone=UTC";
+
+    const [rG, rE, rS] = await Promise.all([
+      omFetch(uGFS),
+      omFetch(uEC,1).catch(()=>null),
+      omFetch(uSST,1).catch(()=>null)
+    ]);
+    const gfs = norm(await rG.json());
+    const ec  = rE ? norm(await rE.json()) : null;
+    const sst = rS ? norm(await rS.json()) : null;
+    function norm(j){ return Array.isArray(j)?j:[j]; }
+
+    // media di una variabile su una finestra di giorni [d0,d1) per un punto (campiona ogni 6 ore)
+    function avg(dataArr, ptIdx, varName, d0, d1){
+      const loc = dataArr[ptIdx]; if(!loc||!loc.hourly) return null;
+      const h=loc.hourly, arr=h[varName]; if(!arr) return null;
+      const t0 = new Date(h.time[0]+":00Z").getTime();
+      let s=0,c=0;
+      for(let i=0;i<h.time.length;i+=6){
+        const dd=(new Date(h.time[i]+":00Z").getTime()-t0)/86400e3;
+        if(dd<d0||dd>=d1) continue;
+        const v=arr[i]; if(v==null) continue;
+        s+=v;c++;
+      }
+      return c? s/c : null;
+    }
+    const PI = {}; SCEN_PTS.forEach((p,i)=>PI[p.id]=i);
+    const mIdx = new Date().getUTCMonth();
+    const t850ref=T850_REF[mIdx], z500ref=Z500_REF[mIdx], sstref=SST_REF[mIdx];
+    const fx=(v,d)=>v==null?"–":v.toFixed(d==null?0:d).replace(".",",");
+
+    function windowAnalysis(d0,d1,label){
+      const g=(id,v)=>avg(gfs,PI[id],v,d0,d1);
+      const pAZ=g("AZ","pressure_msl"), pIS=g("IS","pressure_msl"), pSC=g("SC","pressure_msl"), pUK=g("UK","pressure_msl");
+      const tIT=avg4("temperature_850hPa"), zIT=avg4("geopotential_height_500hPa");
+      const tAF=mean([g("AF1","temperature_850hPa"),g("AF2","temperature_850hPa")]);
+      const pMED=Math.min.apply(null,["NI","CI","AD","SI","EG"].map(id=>g(id,"pressure_msl")).filter(v=>v!=null).concat([9999]));
+      const tNI=g("NI","temperature_850hPa"), tSI=g("SI","temperature_850hPa");
+      function avg4(v){ return mean(["NI","CI","AD","SI"].map(id=>g(id,v))); }
+      function mean(a){ const b=a.filter(v=>v!=null); return b.length? b.reduce((x,y)=>x+y,0)/b.length : null; }
+
+      const zonal = (pAZ!=null&&pIS!=null)? pAZ-pIS : null;
+      const blocco = (pSC!=null&&pAZ!=null&&pSC>1019&&pSC>=pAZ-1) || (pUK!=null&&pAZ!=null&&pUK>1022&&pUK>=pAZ);
+      const tAnom = (tIT!=null)? tIT-t850ref : null;
+      const zAnom = (zIT!=null)? zIT-z500ref : null;
+      const afrPush = tAF!=null&&tIT!=null&&tAF>=tIT+2&&tAnom!=null&&tAnom>=1;
+
+      // classificazione del pattern dominante
+      let pat, txt;
+      if(zAnom!=null&&zAnom>=45&&tAnom!=null&&tAnom>=2.5){
+        pat="Anticiclone subtropicale"+(afrPush?" di matrice africana":"")+" in rinforzo";
+        txt="Geopotenziali alti e aria calda in quota sull'Italia: prevalgono stabilità e temperature "
+          +(tAnom>=5?"nettamente sopra la media, con probabile ondata di caldo":"sopra la media")
+          +". I fenomeni si limitano a temporali di calore su Alpi e rilievi nelle ore pomeridiane"
+          +(afrPush?"; la spinta arriva dal Nord Africa, quindi afa in aumento e possibili velature sabbiose":"")+".";
+      }else if(pMED<=1008||(zAnom!=null&&zAnom<=-40)){
+        pat="Saccatura o circolazione depressionaria sul Mediterraneo";
+        txt="Pressioni basse in area mediterranea e geopotenziali sotto la norma: fase instabile o perturbata con precipitazioni a più riprese"
+          +(tAnom!=null&&tAnom<=-2?", in un contesto più freddo della media":"")
+          +". Da sorvegliare l'eventuale isolamento di una goccia fredda, che renderebbe la distribuzione dei fenomeni molto irregolare.";
+      }else if(blocco){
+        pat="Blocco alle alte latitudini";
+        txt="Alta pressione fra Regno Unito e Scandinavia: il flusso atlantico è deviato e diventano possibili discese di aria "
+          +(tAnom!=null&&tAnom<0?"fredda da nord-est verso il Mediterraneo, con l'Adriatico in prima linea":"da est, dalla traiettoria difficile da fissare")
+          +". Le configurazioni di blocco aumentano l'incertezza: piccoli spostamenti cambiano molto l'esito sull'Italia.";
+      }else if(zonal!=null&&zonal>=22){
+        pat="Flusso atlantico attivo";
+        txt="Forte gradiente fra l'anticiclone delle Azzorre ("+fx(pAZ)+" hPa) e la depressione d'Islanda ("+fx(pIS)+" hPa): correnti occidentali tese con perturbazioni in serie, più incisive al Nord e sul versante tirrenico, clima "
+          +(tAnom!=null&&tAnom>1?"mite":"nella norma")+" e ventilato.";
+      }else{
+        pat="Circolazione debole e variabile";
+        txt="Nessuna figura barica dominante: tempo a tratti instabile ma senza organizzazione, con effetti locali (brezze, temporali diurni, nubi basse) a fare la differenza più della dinamica generale.";
+      }
+
+      let tline="";
+      if(tAnom!=null){
+        if(tAnom>=4) tline="Temperature nettamente sopra la media del periodo";
+        else if(tAnom>=2) tline="Temperature sopra la media";
+        else if(tAnom>=-2) tline="Temperature nel complesso in linea con la media";
+        else if(tAnom>=-4) tline="Temperature sotto la media";
+        else tline="Temperature nettamente sotto la media";
+        if(tNI!=null&&tSI!=null&&Math.abs((tNI-t850ref)-(tSI-t850ref))>=2.5)
+          tline += (tNI<tSI? ", con il Nord più coinvolto dall'aria fresca" : ", con il Sud più esposto al caldo");
+        tline += " (T850 media "+fx(tIT,1)+" °C, riferimento "+fx(t850ref)+" °C).";
+      }
+
+      // affidabilità: confronto ECMWF-GFS sul T850 Italia (dove ECMWF arriva)
+      let conf="", confCls="md";
+      if(d0<10&&ec){
+        const tEC=mean(["NI","CI","AD","SI"].map(id=>avg(ec,PI[id],"temperature_850hPa",d0,Math.min(d1,10))));
+        if(tEC!=null&&tIT!=null){
+          const dv=Math.abs(tEC-tIT);
+          if(dv<1.5){conf="alta: ECMWF e GFS concordano (Δ T850 "+fx(dv,1)+" °C)";confCls="hi";}
+          else if(dv<3){conf="media: ECMWF e GFS divergono un po' (Δ T850 "+fx(dv,1)+" °C)";confCls="md";}
+          else{conf="bassa: ECMWF e GFS raccontano storie diverse (Δ T850 "+fx(dv,1)+" °C)";confCls="lo";}
+        }
+      }
+      if(!conf) conf = d0>=7 ? "bassa per natura: oltre il 7° giorno vale la tendenza, non il dettaglio — verifica gli spaghetti" 
+                            : "media (confronto ECMWF non disponibile al momento)";
+      if(!conf.startsWith("bassa per")&&d0>=7){ conf="bassa per natura a questa distanza; "+conf; confCls="lo"; }
+
+      return "<div class='win'><h4>"+label+"</h4><div class='pat'>"+pat
+        +"<span class='conf "+confCls+"'>affidabilità "+confCls.replace("hi","alta").replace("md","media").replace("lo","bassa")+"</span></div>"
+        +"<p>"+txt+"</p>"
+        +(tline?"<p>"+tline+"</p>":"")
+        +"<div class='idx'>Indici: Azzorre "+fx(pAZ)+" hPa · Islanda "+fx(pIS)+" hPa · zonalità "+fx(zonal)
+        +" · Scandinavia "+fx(pSC)+" hPa · min. Mediterraneo "+fx(pMED===9999?null:pMED)
+        +" hPa · Z500 Italia "+fx(zIT)+" m (rif. "+z500ref+") · T850 Nord Africa "+fx(tAF,1)+" °C"
+        +" · affidabilità "+conf+"</div></div>";
+    }
+
+    let html = windowAnalysis(0,3,"Giorni 1–3 · quadro immediato")
+             + windowAnalysis(3,7,"Giorni 4–7 · medio termine")
+             + windowAnalysis(7,15,"Giorni 8–15 · tendenza");
+
+    // mare: SST reali del Mediterraneo
+    if(sst){
+      const basins=["Mar Ligure","Tirreno","Adriatico"];
+      const vals=sst.map(loc=>{
+        const a=loc.hourly&&loc.hourly.sea_surface_temperature;
+        if(!a) return null;
+        const b=a.filter(v=>v!=null);
+        return b.length? b.reduce((x,y)=>x+y,0)/b.length : null;
+      });
+      const anoms=vals.map(v=>v==null?null:v-sstref);
+      const parts=basins.map((b,i)=>vals[i]==null?null:(b+" "+fx(vals[i],1)+" °C ("+(anoms[i]>=0?"+":"")+fx(anoms[i],1)+" rispetto al riferimento)")).filter(Boolean);
+      if(parts.length){
+        const maxAn=Math.max.apply(null,anoms.filter(v=>v!=null));
+        html += "<div class='win'><h4>Il mare · temperature superficiali reali</h4><p>"+parts.join(" · ")+".</p><p>"
+          + (maxAn>=2 ? "Mediterraneo più caldo del normale: è carburante per l'atmosfera. Con l'arrivo di aria fresca in quota, mari così caldi alimentano temporali più intensi e rigenerativi — un fattore da tenere d'occhio soprattutto tra fine estate e autunno."
+            : maxAn>=0.5 ? "Mare leggermente sopra la norma: contributo moderato di energia e umidità ai fenomeni."
+            : "Mare in linea o sotto la norma stagionale: nessun contributo anomalo di energia ai fenomeni.")
+          + "</p></div>";
+      }
+    }
+
+    // teleconnessioni: onestà su El Niño
+    html += "<div class='win'><h4>E El Niño / La Niña?</h4>"
+      + "<p>ENSO agisce sul Pacifico equatoriale e influenza il clima su scala <strong>stagionale</strong>, non nei 15 giorni: "
+      + "il suo effetto sul Mediterraneo è indiretto, mediato dalle onde planetarie, e non è leggibile dalle carte qui analizzate. "
+      + "Per questo il pannello non lo \"misura\": sarebbe un numero inventato. Ciò che invece pesa davvero sull'Italia a questa scala "
+      + "è quello che vedi sopra — Azzorre, Islanda, blocchi, promontorio africano — più la temperatura reale del nostro mare. "
+      + "Per le prospettive stagionali (mese/trimestre) le fonti giuste sono le previsioni stagionali di ECMWF/Copernicus.</p></div>";
+
+    html += "<div class='disc'>Elaborazione automatica sperimentale su dati GFS (16 gg), ECMWF (10 gg) e Open-Meteo Marine, "
+      + "calcolata alle "+new Date().toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"})
+      + " e valida per l'Italia in generale. Non è un bollettino ufficiale: per allerte e decisioni di sicurezza fai riferimento "
+      + "alla Protezione Civile e ai servizi meteo istituzionali.</div>";
+    return html;
+  }
+
+  /* ---------------- aggiornamento automatico ---------------- */
+  setInterval(()=>{
+    if(store) loadForecast(store.city);
+    if(!scenpanel.classList.contains("hidden") && scen.at && Date.now()-scen.at>=3600e3){
+      scen.html=null; document.getElementById("scenbtn").click();
+    }
+  }, 3600e3);
+  document.addEventListener("visibilitychange", ()=>{
+    if(document.visibilityState==="visible" && store && Date.now()-store.fetchedAt>3600e3){
+      loadForecast(store.city);
+    }
+  });
 })();
 </script>
 </body>
