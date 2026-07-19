@@ -221,7 +221,8 @@
           <div class="sm" id="spagsm">Ogni linea sottile è uno scenario (membro); la linea spessa è la media ensemble.</div>
         </div>
         <div class="spag-tabs" id="spagtabs">
-          <button type="button" data-m="ecmwf" aria-pressed="true">ECMWF ENS · 51 · 15 gg</button>
+          <button type="button" data-m="all" aria-pressed="true">Tutti · 186</button>
+          <button type="button" data-m="ecmwf" aria-pressed="false">ECMWF ENS · 51 · 15 gg</button>
           <button type="button" data-m="gefs" aria-pressed="false">GEFS · 31 · 15 gg</button>
           <button type="button" data-m="iconeps" aria-pressed="false">ICON EPS · 40 · 7 gg</button>
           <button type="button" data-m="wn2" aria-pressed="false">WeatherNext 2 · 64 · 15 gg</button>
@@ -269,13 +270,37 @@
   let selectedDay = 0;
   let accu = { key:"", active:false, byTime:{}, note:"" };
   let wn2 = { ready:false, byTime:{} };
-  let ensSel = "ecmwf";
+  let ensSel = "all";
   const ensCache = {};
 
   function setStatus(msg, isErr){
     statusEl.textContent = msg || "";
     statusEl.classList.toggle("hidden", !msg);
     statusEl.classList.toggle("err", !!isErr);
+  }
+
+  // fetch con tentativi automatici: riprova su errori temporanei del server (503, 502, 429…)
+  async function omFetch(url, tries){
+    tries = tries || 3;
+    let lastErr = null;
+    for(let a=1; a<=tries; a++){
+      try{
+        const res = await fetch(url);
+        if(res.ok) return res;
+        if(res.status>=500 || res.status===429){
+          lastErr = new Error("HTTP "+res.status);
+        }else{
+          throw new Error("HTTP "+res.status); // errore non temporaneo: inutile riprovare
+        }
+      }catch(e){
+        lastErr = e;
+      }
+      if(a<tries){
+        setStatus("Il servizio dati è momentaneamente occupato, riprovo… (tentativo "+(a+1)+" di "+tries+")");
+        await new Promise(r=>setTimeout(r, a*2000));
+      }
+    }
+    throw lastErr || new Error("rete non raggiungibile");
   }
 
   /* ---------------- ricerca città ---------------- */
@@ -289,8 +314,7 @@
     try{
       const url = "https://geocoding-api.open-meteo.com/v1/search?name="
         + encodeURIComponent(q) + "&count=6&language=it&format=json";
-      const res = await fetch(url);
-      if(!res.ok) throw new Error("HTTP "+res.status);
+      const res = await omFetch(url);
       const data = await res.json();
       const list = (data.results||[]);
       if(list.length===0){ setStatus("Nessuna città trovata con questo nome. Prova ad aggiungere la provincia o la nazione.", true); return; }
@@ -330,11 +354,10 @@
         + "&models=" + MODELS.map(m=>m.key).join(",");
       const urlProb = base + "&hourly=precipitation_probability,weather_code,pressure_msl,is_day";
 
-      const [resM, resP] = await Promise.all([fetch(urlModels), fetch(urlProb)]);
-      if(!resM.ok) throw new Error("HTTP "+resM.status);
+      const [resM, resP] = await Promise.all([omFetch(urlModels), omFetch(urlProb, 1).catch(()=>null)]);
       const dataM = await resM.json();
       let dataP = null;
-      if(resP.ok){ dataP = await resP.json(); }
+      if(resP && resP.ok){ dataP = await resP.json(); }
 
       buildStore(city, dataM, dataP);
       setStatus("");
@@ -351,7 +374,10 @@
       Object.keys(ensCache).forEach(k=>delete ensCache[k]);
       loadEnsemble();
     }catch(e){
-      setStatus("Impossibile scaricare le previsioni. Se stai usando l'anteprima nella chat, scarica il file HTML e aprilo con il browser. ("+e.message+")", true);
+      const temp = /HTTP (5\d\d|429)/.test(e.message);
+      setStatus(temp
+        ? "I server di Open-Meteo sono momentaneamente sovraccarichi ("+e.message+"). Non dipende da te: riprova tra qualche minuto. Stato del servizio: status.open-meteo.com"
+        : "Impossibile scaricare le previsioni ("+e.message+"). Se stai usando l'anteprima nella chat, scarica il file HTML e aprilo con il browser.", true);
     }
   }
 
@@ -442,8 +468,7 @@
       + "?latitude="+city.latitude+"&longitude="+city.longitude
       + "&hourly=temperature_2m,wind_speed_10m,precipitation"
       + "&models=google_weathernext2_ensemble&forecast_days=15&timezone=auto";
-    const res = await fetch(url);
-    if(!res.ok) throw new Error("HTTP "+res.status);
+    const res = await omFetch(url);
     const data = await res.json();
     // riusa gli stessi dati per lo spaghetti WeatherNext (evita un secondo download)
     ensCache["wn2|"+city.latitude+"|"+city.longitude] = data;
@@ -741,43 +766,75 @@
     loadEnsemble();
   });
 
+  async function fetchEns(selKey){
+    const cfg = ENS[selKey];
+    const cacheKey = selKey+"|"+store.city.latitude+"|"+store.city.longitude;
+    if(ensCache[cacheKey]) return {data:ensCache[cacheKey], cfg:cfg};
+    const url = "https://ensemble-api.open-meteo.com/v1/ensemble"
+      + "?latitude="+store.city.latitude+"&longitude="+store.city.longitude
+      + "&hourly=temperature_2m&models="+cfg.model
+      + "&forecast_days="+(cfg.days||15)+"&timezone=auto";
+    const res = await omFetch(url);
+    const data = await res.json();
+    ensCache[cacheKey] = data;
+    return {data:data, cfg:cfg};
+  }
+
   async function loadEnsemble(){
     if(!store) return;
+    if(ensSel==="all"){
+      spagbody.innerHTML = "<div class='spag-status'>Scarico i 4 sistemi ensemble (ECMWF, GEFS, ICON, WeatherNext 2)…</div>";
+      const results = await Promise.allSettled([
+        fetchEns("ecmwf"), fetchEns("gefs"), fetchEns("iconeps"), fetchEns("wn2")
+      ]);
+      const ok = results.filter(r=>r.status==="fulfilled").map(r=>r.value);
+      if(ok.length===0){
+        spagbody.innerHTML = "<div class='spag-status'>Impossibile caricare gli ensemble. Riprova tra qualche minuto.</div>";
+        return;
+      }
+      drawSpaghetti(ok, results.length-ok.length);
+      return;
+    }
     const cfg = ENS[ensSel];
-    const cacheKey = ensSel+"|"+store.city.latitude+"|"+store.city.longitude;
-    if(ensCache[cacheKey]){ drawSpaghetti(ensCache[cacheKey], cfg); return; }
     spagbody.innerHTML = "<div class='spag-status'>Scarico i membri di "+cfg.label+"…</div>";
     try{
-      const url = "https://ensemble-api.open-meteo.com/v1/ensemble"
-        + "?latitude="+store.city.latitude+"&longitude="+store.city.longitude
-        + "&hourly=temperature_2m&models="+cfg.model
-        + "&forecast_days="+(cfg.days||15)+"&timezone=auto";
-      const res = await fetch(url);
-      if(!res.ok) throw new Error("HTTP "+res.status);
-      const data = await res.json();
-      ensCache[cacheKey] = data;
-      drawSpaghetti(data, cfg);
+      const ds = await fetchEns(ensSel);
+      drawSpaghetti([ds], 0);
     }catch(e){
       spagbody.innerHTML = "<div class='spag-status'>Impossibile caricare l'ensemble ("+e.message+"). Riprova o cambia sistema ensemble.</div>";
     }
   }
 
-  function drawSpaghetti(data, cfg){
-    const h = data.hourly;
-    const times = h.time;
-    const keys = Object.keys(h).filter(k=>k.indexOf("temperature_2m")===0);
-    if(keys.length===0){ spagbody.innerHTML="<div class='spag-status'>Nessun dato ensemble disponibile.</div>"; return; }
+  // datasets: array di {data, cfg}; disegna tutti i sistemi sovrapposti sulla stessa scala
+  function drawSpaghetti(datasets, failed){
+    // asse temporale principale: il sistema con più punti (15 giorni)
+    let master = null;
+    datasets.forEach(ds=>{
+      if(!master || ds.data.hourly.time.length > master.length) master = ds.data.hourly.time;
+    });
+    if(!master){ spagbody.innerHTML="<div class='spag-status'>Nessun dato ensemble disponibile.</div>"; return; }
+    const idxMap = {};
+    master.forEach((t,i)=>{ idxMap[t]=i; });
+    const n = master.length;
 
-    // limiti
-    let vmin=Infinity, vmax=-Infinity;
-    keys.forEach(k=>h[k].forEach(v=>{ if(v==null)return; if(v<vmin)vmin=v; if(v>vmax)vmax=v; }));
+    // limiti globali su tutti i sistemi
+    let vmin=Infinity, vmax=-Infinity, totMembers=0;
+    datasets.forEach(ds=>{
+      const h=ds.data.hourly;
+      const keys=Object.keys(h).filter(k=>k.indexOf("temperature_2m")===0);
+      ds.keys=keys;
+      totMembers+=keys.length;
+      keys.forEach(k=>h[k].forEach(v=>{ if(v==null)return; if(v<vmin)vmin=v; if(v>vmax)vmax=v; }));
+    });
     if(vmin===Infinity){ spagbody.innerHTML="<div class='spag-status'>Nessun dato ensemble disponibile.</div>"; return; }
     const pad=(vmax-vmin)*0.08+0.5; vmin-=pad; vmax+=pad;
 
-    const W=960, H=340, L=44, R=10, T=14, B=30;
-    const iw=W-L-R, ih=H-T-B, n=times.length;
+    const W=960, H=360, L=44, R=10, T=14, B=30;
+    const iw=W-L-R, ih=H-T-B;
     const X=i=>L+iw*i/(n-1);
     const Y=v=>T+ih*(1-(v-vmin)/(vmax-vmin));
+    const multi = datasets.length>1;
+    const memOpacity = multi ? 0.10 : 0.18;
 
     let svg = "<svg viewBox='0 0 "+W+" "+H+"' role='img' aria-label='Spaghetti ensemble della temperatura'>";
 
@@ -789,48 +846,73 @@
       svg += "<text x='"+(L-6)+"' y='"+(y+3.5)+"' text-anchor='end' font-size='10' fill='#4A5F72'>"+v+"°</text>";
     }
     // griglia X: mezzanotte di ogni giorno (etichetta a giorni alterni se il periodo è lungo)
-    let nMid=0; for(let i=0;i<n;i++) if(times[i].slice(11,13)==="00") nMid++;
+    let nMid=0; for(let i=0;i<n;i++) if(master[i].slice(11,13)==="00") nMid++;
     let midIdx=0;
     for(let i=0;i<n;i++){
-      if(times[i].slice(11,13)==="00"){
+      if(master[i].slice(11,13)==="00"){
         const x=X(i);
         svg += "<line x1='"+x+"' y1='"+T+"' x2='"+x+"' y2='"+(T+ih)+"' stroke='#A9BECB' stroke-width='1' stroke-dasharray='2,3'/>";
         if(nMid<=8 || midIdx%2===0){
-          const d=new Date(times[i].slice(0,10)+"T12:00:00Z");
+          const d=new Date(master[i].slice(0,10)+"T12:00:00Z");
           svg += "<text x='"+(x+3)+"' y='"+(H-10)+"' font-size='10' fill='#4A5F72'>"+DOW[d.getUTCDay()]+" "+d.getUTCDate()+"</text>";
         }
         midIdx++;
       }
     }
 
-    // membri
-    keys.forEach(k=>{
-      const arr=h[k];
-      let dstr="", pen=false;
-      for(let i=0;i<n;i++){
-        const v=arr[i];
-        if(v==null){ pen=false; continue; }
-        dstr += (pen?"L":"M")+X(i).toFixed(1)+" "+Y(v).toFixed(1)+" ";
-        pen=true;
-      }
-      svg += "<path d='"+dstr+"' fill='none' stroke='"+cfg.color+"' stroke-opacity='0.18' stroke-width='1'/>";
+    // membri di tutti i sistemi (linee sottili)
+    datasets.forEach(ds=>{
+      const h=ds.data.hourly, times=h.time;
+      ds.keys.forEach(k=>{
+        const arr=h[k];
+        let dstr="", pen=false;
+        for(let i=0;i<times.length;i++){
+          const v=arr[i];
+          const mi=idxMap[times[i]];
+          if(v==null || mi==null){ pen=false; continue; }
+          dstr += (pen?"L":"M")+X(mi).toFixed(1)+" "+Y(v).toFixed(1)+" ";
+          pen=true;
+        }
+        svg += "<path d='"+dstr+"' fill='none' stroke='"+ds.cfg.color+"' stroke-opacity='"+memOpacity+"' stroke-width='1'/>";
+      });
     });
 
-    // media ensemble
-    let dm="", pen=false;
-    for(let i=0;i<n;i++){
-      let s=0,c=0;
-      keys.forEach(k=>{ const v=h[k][i]; if(v!=null){s+=v;c++;} });
-      if(c===0){ pen=false; continue; }
-      dm += (pen?"L":"M")+X(i).toFixed(1)+" "+Y(s/c).toFixed(1)+" ";
-      pen=true;
+    // medie ensemble di ogni sistema (linee spesse, sopra i membri)
+    datasets.forEach(ds=>{
+      const h=ds.data.hourly, times=h.time;
+      let dm="", pen=false;
+      for(let i=0;i<times.length;i++){
+        let s=0,c=0;
+        ds.keys.forEach(k=>{ const v=h[k][i]; if(v!=null){s+=v;c++;} });
+        const mi=idxMap[times[i]];
+        if(c===0 || mi==null){ pen=false; continue; }
+        dm += (pen?"L":"M")+X(mi).toFixed(1)+" "+Y(s/c).toFixed(1)+" ";
+        pen=true;
+      }
+      svg += "<path d='"+dm+"' fill='none' stroke='"+ds.cfg.color+"' stroke-width='2.6'/>";
+    });
+
+    // legenda interna (solo nella vista sovrapposta)
+    if(multi){
+      let lx=L+8, ly=T+6;
+      datasets.forEach(ds=>{
+        const lbl=ds.cfg.label.replace(" (Google DeepMind)","")+" · "+ds.keys.length;
+        svg += "<line x1='"+lx+"' y1='"+(ly+5)+"' x2='"+(lx+16)+"' y2='"+(ly+5)+"' stroke='"+ds.cfg.color+"' stroke-width='3'/>";
+        svg += "<text x='"+(lx+21)+"' y='"+(ly+9)+"' font-size='10.5' font-weight='700' fill='"+ds.cfg.color+"'>"+lbl+"</text>";
+        ly+=16;
+      });
     }
-    svg += "<path d='"+dm+"' fill='none' stroke='"+cfg.color+"' stroke-width='2.6'/>";
     svg += "</svg>";
 
     spagbody.innerHTML = svg;
-    spagsm.textContent = cfg.label+" · "+keys.length+" scenari (membri) per "+store.city.name
-      + ". La linea spessa è la media ensemble.";
+    if(multi){
+      spagsm.textContent = totMembers+" scenari sovrapposti da "+datasets.length+" sistemi ensemble per "
+        + store.city.name+". Le linee spesse sono le medie di ciascun sistema."
+        + (failed>0 ? " ("+failed+" sistema/i non disponibile/i al momento.)" : "");
+    }else{
+      spagsm.textContent = datasets[0].cfg.label+" · "+totMembers+" scenari (membri) per "+store.city.name
+        + ". La linea spessa è la media ensemble.";
+    }
   }
 
   function esc(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
