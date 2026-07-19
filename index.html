@@ -39,7 +39,7 @@
   .legend span{display:inline-flex;align-items:center;gap:7px}
   .swatch{width:22px;height:0;border-top:3px solid;border-radius:2px;display:inline-block}
   .sw-e{border-color:var(--ecmwf)} .sw-g{border-color:var(--gfs)} .sw-i{border-color:var(--iconm)}
-  .sw-a{border-color:var(--accu);border-top-style:dashed}
+  .sw-a{border-color:var(--accu)}
   .sw-w{border-color:var(--wn)}
   .isobars{position:absolute;inset:0;z-index:1;opacity:.5;pointer-events:none}
   .isobars path{fill:none;stroke:var(--line);stroke-width:1.4}
@@ -77,16 +77,6 @@
   .conf.hi{background:#DDEEE3;color:var(--good)} .conf.md{background:#F5E9CE;color:#8A6413} .conf.lo{background:#F3DAD5;color:var(--bad)}
   .hint{width:100%;font-size:.78rem;color:var(--ink-soft)}
 
-  .accurow{margin-top:14px;background:var(--card);border:1.5px dashed var(--accu);border-radius:var(--radius);
-    padding:14px 16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-  .accurow label{font-size:.8rem;font-weight:700;color:var(--accu);letter-spacing:.06em;text-transform:uppercase}
-  .accurow input{flex:1;min-width:200px;font-size:.9rem;padding:9px 12px;border:1.5px solid var(--line);
-    border-radius:8px;background:#fff;color:var(--ink)}
-  .accurow button{font-size:.85rem;font-weight:700;padding:9px 16px;border:1.5px solid var(--accu);
-    border-radius:8px;background:#fff;color:var(--accu);cursor:pointer}
-  .accurow button:hover{background:var(--accu);color:#fff}
-  .accurow .h{width:100%;font-size:.74rem;color:var(--ink-soft)}
-  .accurow .h a{color:var(--accu)}
 
   .choices{margin-top:14px;display:grid;gap:8px}
   .choices button{text-align:left;padding:12px 14px;border:1.5px solid var(--line);border-radius:8px;
@@ -115,7 +105,7 @@
   .day-chip:focus-visible{outline:2px solid var(--gfs);outline-offset:2px}
 
   .tablewrap{overflow-x:auto;border:1.5px solid var(--ink);border-radius:var(--radius);background:var(--card)}
-  table{width:100%;border-collapse:collapse;min-width:900px}
+  table{width:100%;border-collapse:collapse;min-width:980px}
   thead th{font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft);
     padding:12px 10px 8px;text-align:left;border-bottom:1.5px solid var(--ink);background:var(--paper-deep)}
   thead th.model{border-top:4px solid}
@@ -203,7 +193,7 @@
       <span><i class="swatch sw-g"></i>GFS (NOAA)</span>
       <span><i class="swatch sw-i"></i>ICON (DWD)</span>
       <span><i class="swatch sw-w"></i>WeatherNext 2 (Google DeepMind, 64 membri)</span>
-      <span><i class="swatch sw-a"></i>AccuWeather (opzionale, con chiave API)</span>
+      <span><i class="swatch sw-a"></i>ECMWF AIFS (AI, Centro Europeo)</span>
     </div>
   </div>
 </header>
@@ -226,13 +216,6 @@
     </div>
     <div class="scen-body" id="scenbody"></div>
   </section>
-
-  <div class="accurow" id="accurow">
-    <label for="accukey">AccuWeather</label>
-    <input id="accukey" type="text" placeholder="Incolla qui la tua chiave API AccuWeather (facoltativa)" autocomplete="off">
-    <button type="button" id="accubtn">Attiva</button>
-    <div class="h">Chiave gratuita su <a href="https://developer.accuweather.com" target="_blank" rel="noopener">developer.accuweather.com</a> (registrazione + "Add a new App"). Il piano gratuito copre le <strong>prossime 12 ore</strong>: oltre, la colonna resterà vuota. La chiave resta solo nel tuo browser e viene inviata unicamente ad AccuWeather.</div>
-  </div>
 
   <div id="choices" class="choices hidden"></div>
   <div id="status" class="status hidden"></div>
@@ -286,7 +269,8 @@
   const MODELS = [
     {key:"ecmwf_ifs025", cls:"e", label:"ECMWF IFS"},
     {key:"gfs_seamless", cls:"g", label:"GFS"},
-    {key:"icon_seamless", cls:"i", label:"ICON"}
+    {key:"icon_seamless", cls:"i", label:"ICON"},
+    {key:"ecmwf_aifs025", cls:"a", label:"ECMWF AIFS"}
   ];
   const ENS = {
     ecmwf:  {model:"ecmwf_ifs025", color:"#1A5FA8", label:"ECMWF ENS", days:15},
@@ -310,7 +294,6 @@
 
   let store = null;
   let selectedDay = 0;
-  let accu = { key:"", active:false, byTime:{}, note:"" };
   let wn2 = { ready:false, byTime:{} };
   let ensSel = "all";
   const ensCache = {};
@@ -404,8 +387,6 @@
       buildStore(city, dataM, dataP);
       setStatus("");
 
-      // AccuWeather (se attivo) in parallelo, senza bloccare
-      if(accu.active && accu.key){ fetchAccu(city).then(renderAll).catch(()=>renderAll()); }
       renderAll();
 
       // WeatherNext 2 (media dei 64 membri per la colonna) in parallelo
@@ -555,65 +536,6 @@
     return {t:a.t, sd:a.sd, n:a.n, w:a.w, p:p};
   }
 
-  /* ---------------- AccuWeather ---------------- */
-  document.getElementById("accubtn").addEventListener("click", async ()=>{
-    const k = document.getElementById("accukey").value.trim();
-    if(!k){ setStatus("Incolla prima la chiave API AccuWeather nel campo dedicato.", true); return; }
-    accu.key = k; accu.active = true;
-    if(store){
-      setStatus("Scarico le previsioni AccuWeather…");
-      try{ await fetchAccu(store.city); setStatus(""); }
-      catch(e){ setStatus("AccuWeather: "+e.message, true); }
-      renderAll();
-    }else{
-      setStatus("Chiave salvata per questa sessione. Ora cerca una città: la colonna AccuWeather comparirà da sola.");
-    }
-  });
-
-  async function fetchAccu(city){
-    accu.byTime = {}; accu.note = "";
-    const kq = encodeURIComponent(accu.key);
-    // 1) location key dalle coordinate
-    const locUrl = "https://dataservice.accuweather.com/locations/v1/cities/geoposition/search?apikey="
-      + kq + "&q=" + city.latitude + "," + city.longitude + "&language=it";
-    const r1 = await fetch(locUrl);
-    if(r1.status===401 || r1.status===403) throw new Error("chiave API non valida o non autorizzata.");
-    if(r1.status===503) throw new Error("limite giornaliero di chiamate raggiunto (piano gratuito: 50/giorno).");
-    if(!r1.ok) throw new Error("errore località (HTTP "+r1.status+").");
-    const loc = await r1.json();
-    if(!loc || !loc.Key) throw new Error("località non trovata da AccuWeather.");
-    // 2) previsione oraria 12 ore con dettagli
-    const fUrl = "https://dataservice.accuweather.com/forecasts/v1/hourly/12hour/"
-      + loc.Key + "?apikey=" + kq + "&metric=true&details=true&language=it";
-    const r2 = await fetch(fUrl);
-    if(r2.status===503) throw new Error("limite giornaliero di chiamate raggiunto (piano gratuito: 50/giorno).");
-    if(!r2.ok) throw new Error("errore previsione (HTTP "+r2.status+").");
-    const arr = await r2.json();
-    (arr||[]).forEach(h=>{
-      const key = String(h.DateTime||"").slice(0,13); // YYYY-MM-DDTHH in ora locale
-      accu.byTime[key] = {
-        t: h.Temperature && h.Temperature.Value!=null ? h.Temperature.Value : null,
-        rh: h.RelativeHumidity!=null ? h.RelativeHumidity : null,
-        w: h.Wind && h.Wind.Speed && h.Wind.Speed.Value!=null ? h.Wind.Speed.Value : null,
-        p: h.TotalLiquid && h.TotalLiquid.Value!=null ? h.TotalLiquid.Value : null,
-        pp: h.PrecipitationProbability!=null ? h.PrecipitationProbability : null
-      };
-    });
-    accu.note = "Colonna AccuWeather attiva: copre le prossime 12 ore (limite del piano gratuito).";
-  }
-
-  function accuFor(row){
-    const a = accu.byTime[row.time.slice(0,13)];
-    if(!a) return null;
-    // pioggia del blocco 2h: somma con l'ora successiva se disponibile
-    const hh = row.time.slice(0,11);
-    const nextKey = hh + String(row.hour+1).padStart(2,"0");
-    const b = accu.byTime[nextKey];
-    let p = a.p;
-    if(b && b.p!=null) p = (p||0)+b.p;
-    return {t:a.t, rh:a.rh, w:a.w, p:p, pp:a.pp};
-  }
-
   /* ---------------- rendering ---------------- */
   function dayStats(rows){
     let min=Infinity, max=-Infinity, ppMax=null;
@@ -652,7 +574,7 @@
       +String(n.getUTCMonth()+1).padStart(2,"0")+"/"+n.getUTCFullYear()
       +" ore "+String(n.getUTCHours()).padStart(2,"0")+":"+String(n.getUTCMinutes()).padStart(2,"0")
       +" (fuso orario: "+store.tz+"). Ultime corse disponibili dei modelli."
-      + (accu.note ? " "+accu.note : "");
+      ;
 
     daysEl.innerHTML = "";
     store.days.forEach((d,idx)=>{
@@ -674,9 +596,9 @@
     let th = "<th scope='col'>Ora</th>"
       + "<th scope='col' class='model m-e'>ECMWF IFS</th>"
       + "<th scope='col' class='model m-g'>GFS</th>"
-      + "<th scope='col' class='model m-i'>ICON</th>";
+      + "<th scope='col' class='model m-i'>ICON</th>"
+      + "<th scope='col' class='model m-a'>ECMWF AIFS</th>";
     if(wn2.ready) th += "<th scope='col' class='model m-w'>WeatherNext 2</th>";
-    if(accu.active) th += "<th scope='col' class='model m-a'>AccuWeather</th>";
     th += "<th scope='col' class='prob'>Cielo · pioggia · hPa</th><th scope='col'>Accordo</th>";
     theadrow.innerHTML = th;
 
@@ -698,9 +620,9 @@
                    + "<strong>media dei 64 membri</strong> del suo ensemble con ± la deviazione standard: più il ± è piccolo, più i 64 scenari "
                    + "concordano. Il modello non fornisce l'umidità a 2 m; i dati nativi sono ogni 6 ore, interpolati, quindi la pioggia "
                    + "appare distribuita in modo uniforme. " : "")
-      + (accu.active ? "La colonna <strong>AccuWeather</strong> copre le prossime 12 ore (limite del piano gratuito); "
-                     + "oltre mostra un trattino. " : "")
-      + "Dati: Open‑Meteo (ECMWF, NOAA, DWD"+(wn2.ready?", Google DeepMind":"")+")"+(accu.active?" e AccuWeather":"")+". "
+      + "La colonna <strong>ECMWF AIFS</strong> è il modello a intelligenza artificiale del Centro Europeo: copre tutti i 14 giorni "
+      + "con dati nativi ogni 6 ore interpolati, quindi come WeatherNext 2 tende a distribuire la pioggia in modo uniforme. "
+      + "Dati: Open‑Meteo (ECMWF, NOAA, DWD"+(wn2.ready?", Google DeepMind":"")+"). "
       + "Per decisioni di sicurezza fai sempre riferimento agli avvisi ufficiali.";
 
     renderTable();
@@ -740,7 +662,7 @@
   function renderTable(){
     const d = store.days[selectedDay];
     const rows = store.byDay[d] || [];
-    const cols = 5 + (wn2.ready?1:0) + (accu.active?1:0) + 1;
+    const cols = 7 + (wn2.ready?1:0);
     tbody.innerHTML = "";
     rows.forEach(r=>{
       const tr = document.createElement("tr");
@@ -760,17 +682,6 @@
                 + "<div class='sub rain'>💧 "+fmtRain(wnd.p)+"</div></td>";
         }else{
           html += "<td><div class='temp t-w' style='opacity:.35'>–</div><div class='sub'>non disponibile</div></td>";
-        }
-      }
-      if(accu.active){
-        const a = accuFor(r);
-        if(a){
-          html += "<td><div class='temp t-a'>"+fmtT(a.t)+"</div>"
-                + "<div class='sub'>"+fmtSub(a)+"</div>"
-                + "<div class='sub rain'>💧 "+fmtRain(a.p)
-                + (a.pp!=null ? " · "+Math.round(a.pp)+"%" : "")+"</div></td>";
-        }else{
-          html += "<td><div class='temp t-a' style='opacity:.35'>–</div><div class='sub'>oltre 12 h</div></td>";
         }
       }
       const icon = wmoIcon(r.wc, r.isday===1);
@@ -1006,7 +917,7 @@
   }
 
   function buildAnalysis(row){
-    const NAMES = ["ECMWF IFS","GFS","ICON"];
+    const NAMES = ["ECMWF IFS","GFS","ICON","ECMWF AIFS"];
     const ms = row.models.map((m,i)=>({name:NAMES[i], t:m.t, rh:m.rh, w:m.w, p:m.p}))
                          .filter(m=>m.t!=null);
     const wnd = wn2.ready ? wn2For(row) : null;
