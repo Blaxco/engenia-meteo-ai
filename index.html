@@ -92,7 +92,9 @@
   .cityhead .meta{font-size:.8rem;color:var(--ink-soft)}
   .runinfo{font-size:.75rem;color:var(--ink-soft);margin-bottom:18px}
 
-  .days{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 12px;scrollbar-width:thin}
+  .days{display:flex;gap:8px;overflow-x:auto;padding:8px 2px 12px;scrollbar-width:thin;
+    position:sticky;top:0;z-index:20;background:var(--paper);
+    box-shadow:0 8px 10px -8px rgba(20,40,58,.28)}
   .day-chip{flex:0 0 auto;border:1.5px solid var(--line);background:var(--card);border-radius:9px;
     padding:9px 13px;cursor:pointer;text-align:center;min-width:100px;color:var(--ink)}
   .day-chip .dn{font-size:.68rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft)}
@@ -376,13 +378,18 @@
         + "&forecast_days=14&timezone=auto";
       const urlModels = base
         + "&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation"
-        + "&models=" + MODELS.map(m=>m.key).join(",");
+        + "&models=" + MODELS.filter(m=>m.key!=="ecmwf_aifs025").map(m=>m.key).join(",");
       const urlProb = base + "&hourly=precipitation_probability,weather_code,pressure_msl,is_day";
 
-      const [resM, resP] = await Promise.all([omFetch(urlModels), omFetch(urlProb, 1).catch(()=>null)]);
+      const [resM, resP, dataA] = await Promise.all([
+        omFetch(urlModels),
+        omFetch(urlProb, 1).catch(()=>null),
+        fetchAifs(base).catch(()=>null)
+      ]);
       const dataM = await resM.json();
       let dataP = null;
       if(resP && resP.ok){ dataP = await resP.json(); }
+      mergeAifs(dataM, dataA);
 
       buildStore(city, dataM, dataP);
       setStatus("");
@@ -402,6 +409,39 @@
         ? "I server di Open-Meteo sono momentaneamente sovraccarichi ("+e.message+"). Non dipende da te: riprova tra qualche minuto. Stato del servizio: status.open-meteo.com"
         : "Impossibile scaricare le previsioni ("+e.message+"). Se stai usando l'anteprima nella chat, scarica il file HTML e aprilo con il browser.", true);
     }
+  }
+
+  // AIFS su chiamata separata: prova due nomi modello e due set di variabili,
+  // così un problema su AIFS non tocca il resto della tabella
+  async function fetchAifs(base){
+    const keys = ["ecmwf_aifs025","ecmwf_aifs025_single"];
+    const varsets = [
+      "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation",
+      "temperature_2m,wind_speed_10m,precipitation"
+    ];
+    for(const k of keys){
+      for(const vs of varsets){
+        try{
+          const res = await omFetch(base+"&hourly="+vs+"&models="+k, 1);
+          const d = await res.json();
+          if(d && d.hourly && d.hourly.temperature_2m && d.hourly.temperature_2m.some(v=>v!=null)) return d;
+        }catch(e){ /* tenta la combinazione successiva */ }
+      }
+    }
+    return null;
+  }
+
+  function mergeAifs(dataM, dataA){
+    if(!dataA || !dataA.hourly) return;
+    const hm = dataM.hourly, ha = dataA.hourly;
+    const idx = {}; hm.time.forEach((t,i)=>{ idx[t]=i; });
+    ["temperature_2m","relative_humidity_2m","wind_speed_10m","wind_direction_10m","wind_gusts_10m","precipitation"]
+    .forEach(v=>{
+      if(!ha[v]) return;
+      const arr = new Array(hm.time.length).fill(null);
+      ha.time.forEach((t,i)=>{ const j=idx[t]; if(j!=null) arr[j]=ha[v][i]; });
+      hm[v+"_ecmwf_aifs025"] = arr;
+    });
   }
 
   function hv(data, base, modelKey, i){
