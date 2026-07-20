@@ -375,7 +375,7 @@
         + "?latitude="+city.latitude+"&longitude="+city.longitude
         + "&forecast_days=14&timezone=auto";
       const urlModels = base
-        + "&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation"
+        + "&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation"
         + "&models=" + MODELS.map(m=>m.key).join(",");
       const urlProb = base + "&hourly=precipitation_probability,weather_code,pressure_msl,is_day";
 
@@ -476,6 +476,8 @@
           t: hv(dataM,"temperature_2m",m.key,i),
           rh: hv(dataM,"relative_humidity_2m",m.key,i),
           w: hv(dataM,"wind_speed_10m",m.key,i),
+          d: hv(dataM,"wind_direction_10m",m.key,i),
+          g: hv(dataM,"wind_gusts_10m",m.key,i),
           p: rain2h(dataM,m.key,i)
         });
       });
@@ -606,7 +608,9 @@
       "<strong>💡 Clicca su una riga qualsiasi</strong> per aprire l'analisi meteorologica di quell'ora: il quadro termico, "
       + "il perché di eventuali disaccordi fra i modelli (venti di caduta, fronti, tempismi), precipitazioni, vento, pressione e un consiglio di lettura. "
       + "Ogni cella modello riporta <strong>temperatura</strong>, <strong>umidità relativa (UR)</strong>, "
-      + "<strong>vento medio a 10 m</strong> e la <strong>pioggia prevista nelle 2 ore</strong> (mm). "
+      + "il <strong>vento</strong> nel formato freccia + provenienza + media/raffica (es. ↓ NE 16/34 km/h = vento da nord-est, "
+      + "16 km/h medi con raffiche a 34; la freccia indica dove va l'aria), "
+      + "e la <strong>pioggia prevista nelle 2 ore</strong> (mm). "
       + "La colonna <strong>Cielo · pioggia · hPa</strong> mostra l'icona del tempo previsto (☀️ sereno, ⛅ variabile, ☁️ coperto, "
       + "🌧️ pioggia, ⛈️ temporale…), la probabilità di precipitazione derivata dall'insieme degli scenari "
       + "(70% = 7 scenari su 10 prevedono pioggia, non pioggia debole) e la <strong>pressione al livello del mare</strong>: "
@@ -629,11 +633,23 @@
     resultEl.classList.remove("hidden");
   }
 
+  const DIR8 = ["N","NE","E","SE","S","SO","O","NO"];
+  const WIND_NAMES = ["tramontana","grecale","levante","scirocco","ostro","libeccio","ponente","maestrale"];
+  function dir8(deg){ return DIR8[Math.round(deg/45)%8]; }
+  function windName(deg){ return WIND_NAMES[Math.round(deg/45)%8]; }
+  function dirArrow(deg){
+    return "<span style='display:inline-block;transform:rotate("+Math.round(deg)+"deg)'>↓</span>";
+  }
   function fmtT(v){ return v==null ? "–" : v.toFixed(1).replace(".",",")+" °C"; }
   function fmtSub(m){
     const rh = m.rh==null ? "–" : Math.round(m.rh)+"%";
-    const w  = m.w==null ? "–" : Math.round(m.w)+" km/h";
-    return "UR "+rh+" · "+w;
+    let wind;
+    if(m.w==null) wind = "–";
+    else{
+      wind = Math.round(m.w)+(m.g!=null?"/"+Math.round(m.g):"")+" km/h";
+      if(m.d!=null) wind = dirArrow(m.d)+" "+dir8(m.d)+" "+wind;
+    }
+    return "UR "+rh+" · "+wind;
   }
   function fmtRain(v){
     if(v==null) return "–";
@@ -1031,11 +1047,32 @@
     if(winds.length>0){
       const wmax = Math.max(...winds.map(m=>m.w));
       const wmin = Math.min(...winds.map(m=>m.w));
+      const dirs = ms.filter(m=>m.d!=null).map(m=>m.d);
+      const gusts = ms.filter(m=>m.g!=null).map(m=>m.g);
       let wtxt = "<p><strong>Vento:</strong> ";
-      if(wmax>=40) wtxt += "sostenuto o forte, fino a "+Math.round(wmax)+" km/h medi (le raffiche possono superare nettamente questo valore)";
+      if(wmax>=40) wtxt += "sostenuto o forte, fino a "+Math.round(wmax)+" km/h medi";
       else if(wmax>=20) wtxt += "moderato, attorno a "+Math.round((wmax+wmin)/2)+" km/h";
       else wtxt += "debole, sotto i 20 km/h";
-      if(winds.length>=2 && (wmax-wmin)>=15) wtxt += "; nota che i modelli divergono anche sul vento ("+Math.round(wmin)+"–"+Math.round(wmax)+" km/h), coerente con l'incertezza sullo scenario";
+      if(dirs.length>0){
+        // media circolare della direzione
+        let sx=0, sy=0;
+        dirs.forEach(d=>{ sx+=Math.sin(d*Math.PI/180); sy+=Math.cos(d*Math.PI/180); });
+        const dm=(Math.atan2(sx,sy)*180/Math.PI+360)%360;
+        wtxt += ", in prevalenza da "+dir8(dm)+" ("+windName(dm)+")";
+        // massimo scarto angolare fra i modelli
+        let maxDiff=0;
+        for(let a=0;a<dirs.length;a++) for(let b=a+1;b<dirs.length;b++){
+          let dd=Math.abs(dirs[a]-dirs[b]); if(dd>180) dd=360-dd;
+          if(dd>maxDiff) maxDiff=dd;
+        }
+        if(maxDiff>=70) wtxt += ", ma i modelli non concordano sulla provenienza (scarti fino a "+Math.round(maxDiff)+"°): tipico quando è in gioco una rotazione del vento legata a un fronte o a una brezza";
+      }
+      if(gusts.length>0){
+        const gmax=Math.max.apply(null,gusts);
+        if(gmax>=70) wtxt += ". Attenzione alle raffiche: fino a "+Math.round(gmax)+" km/h, valori da danni potenziali";
+        else if(gmax>=45) wtxt += ". Raffiche fino a "+Math.round(gmax)+" km/h";
+      }
+      if(winds.length>=2 && (wmax-wmin)>=15) wtxt += ". Nota che i modelli divergono anche sull'intensità ("+Math.round(wmin)+"-"+Math.round(wmax)+" km/h), coerente con l'incertezza sullo scenario";
       P.push(wtxt+".</p>");
     }
 
